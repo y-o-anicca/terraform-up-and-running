@@ -20,6 +20,7 @@ resource "aws_db_instance" "example" {
   name = "example_database"
   username = "admin"
   password = data.aws_secretsmanager_secret_version.db_password.secret_string
+  skip_final_snapshot = true
 }
 
 data "aws_secretsmanager_secret_version" "db_password" {
