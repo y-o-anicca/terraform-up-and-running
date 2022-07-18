@@ -11,13 +11,13 @@ terraform {
 }
 
 resource "aws_launch_configuration" "example" {
-  image_id = "ami-0c55b159cbfafe1f0"
+  image_id = var.ami
   instance_type = var.instance_type
   security_groups = [ aws_security_group.instance.id ]
 
   user_data = <<-EOF
               #!/bin/bash
-              echo "Hello, World" > index.html
+              echo ${var.server_text} > index.html
               echo "${data.terraform_remote_state.db.outputs.address}" >> index.html
               echo "${data.terraform_remote_state.db.outputs.port}" >> index.html
               nohup busybox httpd -f -p ${var.server_port} &
@@ -31,6 +31,9 @@ resource "aws_launch_configuration" "example" {
 }
 
 resource "aws_autoscaling_group" "example" {
+  # Explicitly depend on the launch configuration's name so each time it's replaced, this ASG is also replaced
+  name = "${var.cluster_name}-${aws_launch_configuration.example.name}"
+
   launch_configuration = aws_launch_configuration.example.name
   // This parameter specifies to the ASG into which VPC subnets the EC2 Instances should be deployed
   vpc_zone_identifier = data.aws_subnet_ids.default.ids
@@ -44,11 +47,47 @@ resource "aws_autoscaling_group" "example" {
   min_size = var.min_size
   max_size = var.max_size
 
+  # Wait for at least this many instances to pass health checks before considering the ASG deployment complete
+  min_elb_capacity = var.min_size
+
+  # When replacing this ASG, create the replacement first, and only delete the # original after
+  lifecycle {
+    create_before_destroy = true 
+  }
+
   tag {
     key = "Name"
     value = var.cluster_name
     propagate_at_launch = true
   }
+
+  dynamic "tag" {
+    for_each = var.custom_tags
+    content {
+      key = tag.key 
+      value = tag.value 
+      propagate_at_launch = true
+    } 
+  }
+}
+
+resource "aws_autoscaling_schedule" "scale_out_during_business_hours" { 
+  count = var.enable_autoscaling ? 1 : 0
+  scheduled_action_name  = "${var.cluster_name}-scale-out-during-business-hours"
+  min_size = 2
+  max_size = 10
+  desired_capacity = 10
+  recurrence = "0 9 * * *"
+  autoscaling_group_name = aws_autoscaling_group.example.name
+}
+resource "aws_autoscaling_schedule" "scale_in_at_night" {
+  count = var.enable_autoscaling ? 1 : 0
+  scheduled_action_name  = "${var.cluster_name}-scale-in-at-night"
+  min_size = 2
+  max_size = 10
+  desired_capacity = 2
+  recurrence = "0 17 * * *"
+  autoscaling_group_name = aws_autoscaling_group.example.name
 }
 
 resource "aws_lb" "example" {
